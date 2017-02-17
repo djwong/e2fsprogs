@@ -1,0 +1,14 @@
+.TH E2SCRUB 8 "@E2FSPROGS_MONTH@ @E2FSPROGS_YEAR@" "E2fsprogs version @E2FSPROGS_VERSION@"
+.SH NAME
+e2scrub_all - Check all mounted btrfs/ext4/XFS LVM file systems for errors.
+.SH SYNOPSYS
+.B
+e2scrub_all
+.SH DESCRIPTION
+Searches the system for all LVM volumes containing an ext2, ext3, or
+ext4 file system, and checks them all for errors.
+If the file system has no errors, it will be fstrim'd.
+.SH AUTHOR
+Darrick J. Wong <darrick.wong@oracle.com>
+.SH COPYRIGHT
+Copyright ©2018 Darrick J. Wong.  License is GPLv2+. <http://www.gnu.org/licenses/gpl-2.0.html>

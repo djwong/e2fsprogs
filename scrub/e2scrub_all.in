@@ -1,0 +1,57 @@
+#!/bin/bash
+
+#  Copyright (C) 2018 Oracle.  All Rights Reserved.
+#
+#  Author: Darrick J. Wong <darrick.wong@oracle.com>
+#
+#  This program is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU General Public License
+#  as published by the Free Software Foundation; either version 2
+#  of the License, or (at your option) any later version.
+#
+#  This program is distributed in the hope that it would be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write the Free Software Foundation,
+#  Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301, USA.
+
+# Check all ext[234] filesystems mounted on LVM
+types="ext2,ext3,ext4"
+
+exitcode() {
+	ret="$1"
+
+	exit "${ret}"
+}
+
+prog_path() {
+	path="$1"
+	displayname="$2"
+
+	if ! type -P "${path}" && [ -n "${displayname}" ]; then
+		echo "${displayname}: Command not found."
+		exitcode 8
+	fi
+}
+
+LVS_PROG="$(prog_path "@root_sbindir@/lvs" "lvs")"
+BLKID_PROG="$(prog_path "@root_sbindir@/blkid" "blkid")"
+
+# Scrub any fs on lvm by creating a snapshot and fscking that.
+"${LVS_PROG}" -o vg_name,lv_name,lv_role --noheadings 2> /dev/null | while read vg lv role extra; do
+	# parsing error?
+	test -n "${extra}" && continue
+	# Skip snapshots
+	echo "${role}" | grep -q "snapshot" && continue
+
+	dev="/dev/${vg}/${lv}"
+	# Skip non-ext[234]
+	"${BLKID_PROG}" -p -n "${types}" "${dev}" > /dev/null 2>&1 || continue
+
+	${DBG} "@root_sbindir@/e2scrub" "${dev}"
+done
+
+exitcode 0
