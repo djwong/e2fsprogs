@@ -40,6 +40,22 @@ print_help() {
 exitcode() {
 	ret="$1"
 
+	# If we're being run as a service, the return code must fit the LSB
+	# init script action error guidelines, which is to say that we
+	# compress all errors to 1 ("generic or unspecified error", LSB 5.0
+	# section 22.2) and hope the admin will scan the log for what
+	# actually happened.
+
+	# We have to sleep 2 seconds here because journald uses the pid to
+	# connect our log messages to the systemd service.  This is critical
+	# for capturing all the log messages if the scrub fails, because the
+	# fail service uses the service name to gather log messages for the
+	# error report.
+	if [ -n "${SERVICE_MODE}" ]; then
+		test "${ret}" -ne 0 && ret=1
+		test -x "${SLEEP_PROG}" && "${SLEEP_PROG}" 2
+	fi
+
 	exit "${ret}"
 }
 

@@ -24,6 +24,22 @@ types="ext2,ext3,ext4"
 exitcode() {
 	ret="$1"
 
+	# If we're being run as a service, the return code must fit the LSB
+	# init script action error guidelines, which is to say that we
+	# compress all errors to 1 ("generic or unspecified error", LSB 5.0
+	# section 22.2) and hope the admin will scan the log for what
+	# actually happened.
+
+	# We have to sleep 2 seconds here because journald uses the pid to
+	# connect our log messages to the systemd service.  This is critical
+	# for capturing all the log messages if the scrub fails, because the
+	# fail service uses the service name to gather log messages for the
+	# error report.
+	if [ -n "${SERVICE_MODE}" ]; then
+		test "${ret}" -ne 0 && ret=1
+		test -x "${SLEEP_PROG}" && "${SLEEP_PROG}" 2
+	fi
+
 	exit "${ret}"
 }
 
@@ -39,6 +55,8 @@ prog_path() {
 
 LVS_PROG="$(prog_path "@root_sbindir@/lvs" "lvs")"
 BLKID_PROG="$(prog_path "@root_sbindir@/blkid" "blkid")"
+SYSTEMCTL_PROG="$(prog_path "@root_bindir@/systemctl")"
+SLEEP_PROG="$(prog_path "@root_bindir@/sleep")"
 
 # Scrub any fs on lvm by creating a snapshot and fscking that.
 "${LVS_PROG}" -o vg_name,lv_name,lv_role --noheadings 2> /dev/null | while read vg lv role extra; do
@@ -51,7 +69,15 @@ BLKID_PROG="$(prog_path "@root_sbindir@/blkid" "blkid")"
 	# Skip non-ext[234]
 	"${BLKID_PROG}" -p -n "${types}" "${dev}" > /dev/null 2>&1 || continue
 
-	${DBG} "@root_sbindir@/e2scrub" "${dev}"
+	if [ ! -x "${SYSTEMCTL_PROG}" ]; then
+		${DBG} "@root_sbindir@/e2scrub" "${dev}"
+	else
+		${DBG} "${SYSTEMCTL_PROG}" start "e2scrub@${dev}" 2> /dev/null
+		res=$?
+		if [ "${res}" -ne 0 ] && [ "${res}" -ne 1 ]; then
+			${DBG} "@root_sbindir@/e2scrub" "${dev}"
+		fi
+	fi
 done
 
 exitcode 0
