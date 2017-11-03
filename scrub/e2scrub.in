@@ -1,0 +1,182 @@
+#!/bin/bash
+
+#  Copyright (C) 2018 Oracle.  All Rights Reserved.
+#
+#  Author: Darrick J. Wong <darrick.wong@oracle.com>
+#
+#  This program is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU General Public License
+#  as published by the Free Software Foundation; either version 2
+#  of the License, or (at your option) any later version.
+#
+#  This program is distributed in the hope that it would be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write the Free Software Foundation,
+#  Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301, USA.
+
+# Automatically check a LVM-managed filesystem online.
+# We use lvm snapshots to do this, which means that we can only
+# check filesystems in VGs that have at least 256mb (or so) of
+# free space.
+
+snap_size_mb=256
+fstrim=0
+e2fsck_opts=""
+conffile="@root_sysconfdir@/e2scrub.conf"
+
+test -f "${conffile}" && . "${conffile}"
+
+print_help() {
+	echo "Usage: $0 [-t] device"
+	echo
+	echo "device must be a LVM-managed block device"
+	echo "-t: Run fstrim if successful."
+}
+
+exitcode() {
+	ret="$1"
+
+	exit "${ret}"
+}
+
+prog_path() {
+	path="$1"
+	displayname="$2"
+
+	if ! type -P "${path}" && [ -n "${displayname}" ]; then
+		echo "${displayname}: Command not found."
+		exitcode 8
+	fi
+}
+
+LVS_PROG="$(prog_path "@root_sbindir@/lvs" "lvs")"
+BLKID_PROG="$(prog_path "@root_sbindir@/blkid" "blkid")"
+LVCREATE_PROG="$(prog_path "@root_sbindir@/lvcreate" "lvcreate")"
+LVREMOVE_PROG="$(prog_path "@root_sbindir@/lvremove" "lvremove")"
+FSTRIM_PROG="$(prog_path "@root_sbindir@/fstrim")"
+UDEVADM_PROG="$(prog_path "@root_sbindir@/udevadm")"
+SLEEP_PROG="$(prog_path "@root_bindir@/sleep")"
+
+while getopts "t" opt; do
+	case "${opt}" in
+	"t") fstrim=1;;
+	*) print_help; exitcode 2;;
+	esac
+done
+shift "$((OPTIND - 1))"
+
+dev="$1"
+if [ -z "${dev}" ]; then
+	print_help
+	exitcode 1
+elif [ ! -b "${dev}" ]; then
+	echo "${dev}: Not a block device?"
+	print_help
+	exitcode 16
+fi
+
+# Make sure this is an LVM device we can snapshot
+vg="$("${LVS_PROG}" --noheadings -o vg_name "${dev}" 2> /dev/null | sed -e 's/^  //g')"
+lv="$("${LVS_PROG}" --noheadings -o lv_name "${dev}" 2> /dev/null | sed -e 's/^  //g')"
+if [ -z "${vg}" ] || [ -z "${lv}" ]; then
+	echo "${dev}: Not a LVM device."
+	exitcode 16
+fi
+start_time="$(date +'%Y%m%d%H%M%S')"
+snap="${lv}.e2scrub"
+snap_dev="/dev/${vg}/${snap}"
+fstype="$("${BLKID_PROG}" -p -s TYPE "${dev}" | sed -e 's/^.*TYPE="\(.*\)".*$/\1/g')"
+
+case "${fstype}" in
+"ext2"|"ext3"|"ext4")
+	;;
+*)
+	echo "${dev}: Filesystem of type ${fstype} not supported."
+	exitcode 16
+	;;
+esac
+
+teardown() {
+	# Remove and wait for removal to succeed.
+	"${LVREMOVE_PROG}" -f "${vg}/${snap}" 3>&-
+	while [ -b "${snap_dev}" ] && [ "$?" -eq "5" ]; do
+		/bin/sleep 0.5
+		"${LVREMOVE_PROG}" -f "${vg}/${snap}" 3>&-
+	done
+}
+
+check() {
+	# First we preen the filesystem to recover the journal, then
+	# we see if e2fsck tries any non-optimization repairs.  If
+	# either of these two returns a non-zero status (errors fixed
+	# or remaining) then this fs is bad.
+	E2FSCK_FIXES_ONLY=1
+	export E2FSCK_FIXES_ONLY
+	${DBG} "@root_sbindir@/e2fsck" -p ${e2fsck_opts} "${snap_dev}" || return 1
+	${DBG} "@root_sbindir@/e2fsck" -fy ${e2fsck_opts} "${snap_dev}" || return 1
+	return 0
+}
+
+mark_clean() {
+	${DBG} "@root_sbindir@/tune2fs" -C 0 -T "${start_time}" "${dev}"
+}
+
+mark_corrupt() {
+	${DBG} "@root_sbindir@/tune2fs" -C 16000 -T "19000101" "${dev}"
+}
+
+setup() {
+	# Create the snapshot, wait for device to appear
+	teardown > /dev/null 2> /dev/null
+	"${LVCREATE_PROG}" -s -L "${snap_size_mb}m" -n "${snap}" "${vg}/${lv}" 3>&-
+	test $? -ne 0 && return 1
+	test -x "${UDEVADM_PROG}" && "${UDEVADM_PROG}" settle
+	return 0
+}
+
+trap "teardown" EXIT INT QUIT TERM
+if ! setup; then
+	echo "Snapshot of ${dev} FAILED, will not check!"
+	exitcode 1
+fi
+
+# Check and react
+if check; then
+	echo "Scrub of ${dev} succeeded."
+	mark_clean
+
+	if [ "${fstrim}" -eq 1 ] && [ -x "${FSTRIM_PROG}" ]; then
+		dir="$(lsblk -o MOUNTPOINT -n "${dev}")"
+		if [ -d "${dir}" ]; then
+			# NB: fstrim fails with snapshot present
+			trap '' EXIT
+			teardown
+			"${FSTRIM_PROG}" -v "${dir}"
+		fi
+	fi
+
+	ret=0
+else
+	# fsck failed.  Check if the snapshot is invalid; if so, make a
+	# note of that at the end of the log.  This isn't necessarily a
+	# failure because the mounted fs could have overflowed the
+	# snapshot with regular disk writes /or/ our repair process
+	# could have done it by repairing too much.
+	#
+	# If it's really corrupt we ought to fsck at next boot.
+	is_invalid="$("${LVS_PROG}" -o lv_snapshot_invalid --noheadings "${snap_dev}")"
+	if [ -n "${is_invalid}" ]; then
+		echo "Scrub of ${dev} FAILED due to invalid snapshot."
+		ret=8
+	else
+		echo "Scrub of ${dev} FAILED!  Reboot soon to fsck."
+		mark_corrupt
+		ret=6
+	fi
+fi
+
+exitcode "${ret}"

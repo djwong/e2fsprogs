@@ -18,3 +18,5 @@ $prefix			@prefix@
 JDEV			
 # Enable the documentation for the tdb profile in e2fsck.conf's man page
 TDB_MAN_COMMENT		@TDB_MAN_COMMENT@
+root_sbindir		@root_sbindir@
+root_bindir		@root_bindir@

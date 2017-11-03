@@ -1,0 +1,31 @@
+.TH E2SCRUB 8 "@E2FSPROGS_MONTH@ @E2FSPROGS_YEAR@" "E2fsprogs version @E2FSPROGS_VERSION@"
+.SH NAME
+e2scrub - check a mounted ext2/ext3/ext4 file system on an LVM volume for errors.
+.SH SYNOPSYS
+.B
+e2scrub [OPTION] [LVM DEVICE PATH]
+.SH DESCRIPTION
+Given a live file system on a LVM volume, this program snapshots the
+logical volume and runs a file system check to look for serious errors.
+If no errors are found, fstrim can be called on the mounted file system.
+However, if errors are found, the file system should be unmounted and
+fixed.
+.SH OPTIONS
+.TP
+\fB-t\fR
+Run
+.B
+fstrim(1)
+on the mounted filesystem if no errors are found.
+.SH EXIT CODE
+The exit codes are the same as in
+.BR e2fsck (8)
+.SH BUGS
+This utility is capable of checking any ext* filesystem on an LVM volume,
+regardless of whether it is mounted.
+.SH SEE ALSO
+.BR e2fsck (8)
+.SH AUTHOR
+Darrick J. Wong <darrick.wong@oracle.com>
+.SH COPYRIGHT
+Copyright ©2018 Darrick J. Wong.  License is GPLv2+. <http://www.gnu.org/licenses/gpl-2.0.html>

@@ -1312,6 +1312,11 @@ AC_SUBST(LINUX_CMT)
 AC_SUBST(CYGWIN_CMT)
 AC_SUBST(UNIX_CMT)
 dnl
+dnl e2scrub only builds on linux
+dnl
+E2SCRUB_CMT="$LINUX_CMT"
+AC_SUBST(E2SCRUB_CMT)
+dnl
 dnl Linux and Hurd places root files in the / by default
 dnl
 case "$host_os" in
@@ -1469,6 +1474,44 @@ LDFLAGS_SHLIB=${LDFLAGS_SHLIB:-$LDFLAGS}
 AC_SUBST(CFLAGS_SHLIB)
 AC_SUBST(CFLAGS_STLIB)
 AC_SUBST(LDFLAGS_SHLIB)
+
+dnl
+dnl Where do udev rules go?
+dnl
+AC_ARG_WITH([udev_rules_dir],
+  [AS_HELP_STRING([--with-udev-rules-dir@<:@=DIR@:>@],
+	[Install udev rules into DIR.])],
+  [],
+  [with_udev_rules_dir=yes])
+AS_IF([test "x${with_udev_rules_dir}" != "xno"],
+  [
+	AS_IF([test "x${with_udev_rules_dir}" = "xyes"],
+	  [
+		PKG_CHECK_MODULES([udev], [udev],
+		  [
+			with_udev_rules_dir="$($PKG_CONFIG --variable=udevdir udev)/rules.d"
+		  ], [
+			with_udev_rules_dir=""
+		  ])
+	  ])
+	AC_MSG_CHECKING([for udev rules dir])
+	pkg_udev_rules_dir="${with_udev_rules_dir}"
+	AS_IF([test -n "${pkg_udev_rules_dir}"],
+	  [
+		AC_MSG_RESULT(${pkg_udev_rules_dir})
+		have_udev="yes"
+	  ],
+	  [
+		AC_MSG_RESULT(no)
+		have_udev="no"
+	  ])
+  ],
+  [
+	have_udev="disabled"
+  ])
+AC_SUBST(have_udev)
+AC_SUBST(pkg_udev_rules_dir)
+
 dnl
 dnl Make our output files, being sure that we create the some miscellaneous 
 dnl directories
@@ -1494,7 +1537,7 @@ for i in MCONFIG Makefile e2fsprogs.spec \
 	misc/Makefile ext2ed/Makefile e2fsck/Makefile \
 	debugfs/Makefile tests/Makefile tests/progs/Makefile \
 	resize/Makefile doc/Makefile intl/Makefile \
-	intl/libgnuintl.h po/Makefile.in ; do
+	intl/libgnuintl.h po/Makefile.in scrub/Makefile; do
 	if test -d `dirname ${srcdir}/$i` ; then
 		outlist="$outlist $i"
 	fi
